@@ -30,6 +30,11 @@ struct AnnotationCanvas: View {
 
     @State private var inProgressStroke: AnnotationStroke?
 
+    /// Minimum spacing between successive freehand samples. Points closer
+    /// than this are dropped so pen/stylus jitter doesn't add noise that
+    /// the curve smoothing then has to fight.
+    private static let minSampleDistance: CGFloat = 1.5
+
     // Drag session for pointer / selector modes. Covers move + resize +
     // marquee + lasso, all driven through one DragGesture so they're
     // mutually exclusive.
@@ -291,7 +296,8 @@ struct AnnotationCanvas: View {
                     tool: .pen,
                     pressures: [store.currentPressure]
                 )
-            } else {
+            } else if let last = inProgressStroke?.points.last,
+                      hypot(point.x - last.x, point.y - last.y) >= Self.minSampleDistance {
                 inProgressStroke?.points.append(point)
                 inProgressStroke?.pressures?.append(store.currentPressure)
             }
@@ -304,7 +310,8 @@ struct AnnotationCanvas: View {
                     width: store.highlighterWidth,
                     tool: .highlighter
                 )
-            } else {
+            } else if let last = inProgressStroke?.points.last,
+                      hypot(point.x - last.x, point.y - last.y) >= Self.minSampleDistance {
                 inProgressStroke?.points.append(point)
             }
 
@@ -469,15 +476,14 @@ struct AnnotationCanvas: View {
             return
         }
 
-        var path = Path()
         let isDot = stroke.points.count == 1
+        var path = Path()
         if isDot {
             let p = stroke.points[0]
             let r = stroke.width / 2
             path.addEllipse(in: CGRect(x: p.x - r, y: p.y - r, width: stroke.width, height: stroke.width))
         } else {
-            path.move(to: stroke.points[0])
-            for p in stroke.points.dropFirst() { path.addLine(to: p) }
+            path = Self.smoothedPath(through: stroke.points)
         }
         context.drawLayer { layer in
             layer.opacity = stroke.opacity
@@ -488,6 +494,36 @@ struct AnnotationCanvas: View {
                 layer.stroke(path, with: .color(stroke.color), style: style)
             }
         }
+    }
+
+    /// Builds a smooth curve through a freehand polyline using the
+    /// midpoint / quadratic-Bézier technique: the path runs through the
+    /// midpoint of every segment, using each sampled point as the control
+    /// handle. This rounds off the sharp corners that straight segments
+    /// leave between sampled points, so handwriting reads as smooth curves.
+    static func smoothedPath(through pts: [CGPoint]) -> Path {
+        var path = Path()
+        guard pts.count > 1 else {
+            if let p = pts.first { path.move(to: p) }
+            return path
+        }
+        if pts.count == 2 {
+            path.move(to: pts[0])
+            path.addLine(to: pts[1])
+            return path
+        }
+        path.move(to: pts[0])
+        path.addLine(to: midpoint(pts[0], pts[1]))
+        for i in 1..<pts.count - 1 {
+            let next = midpoint(pts[i], pts[i + 1])
+            path.addQuadCurve(to: next, control: pts[i])
+        }
+        path.addLine(to: pts[pts.count - 1])
+        return path
+    }
+
+    private static func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
+        CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
     }
 
     /// Maps a raw 0…1 pressure onto a stroke width. A light touch still
@@ -506,23 +542,60 @@ struct AnnotationCanvas: View {
         pressures: [CGFloat],
         in context: inout GraphicsContext
     ) {
+        let pts = stroke.points
+
+        // Two points: a single straight segment, width from both ends.
+        if pts.count == 2 {
+            let w = pressureWidth((pressures[0] + pressures[1]) / 2, base: stroke.width)
+            var seg = Path()
+            seg.move(to: pts[0])
+            seg.addLine(to: pts[1])
+            context.drawLayer { layer in
+                layer.opacity = stroke.opacity
+                layer.stroke(seg, with: .color(stroke.color),
+                             style: StrokeStyle(lineWidth: w, lineCap: .round, lineJoin: .round))
+            }
+            return
+        }
+
         context.drawLayer { layer in
             layer.opacity = stroke.opacity
-            for i in 1..<stroke.points.count {
-                let a = stroke.points[i - 1]
-                let b = stroke.points[i]
-                let avg = (pressures[i - 1] + pressures[i]) / 2
-                let w = pressureWidth(avg, base: stroke.width)
+
+            // Lead-in: first point to the first midpoint.
+            var current = Self.midpoint(pts[0], pts[1])
+            var lead = Path()
+            lead.move(to: pts[0])
+            lead.addLine(to: current)
+            layer.stroke(
+                lead, with: .color(stroke.color),
+                style: strokeStyle(pressureWidth(pressures[0], base: stroke.width))
+            )
+
+            // Smooth quadratic through each interior point, stroked at that
+            // point's pressure width so the thickness varies along the curve.
+            for i in 1..<pts.count - 1 {
+                let next = Self.midpoint(pts[i], pts[i + 1])
                 var seg = Path()
-                seg.move(to: a)
-                seg.addLine(to: b)
-                layer.stroke(
-                    seg,
-                    with: .color(stroke.color),
-                    style: StrokeStyle(lineWidth: w, lineCap: .round, lineJoin: .round)
-                )
+                seg.move(to: current)
+                seg.addQuadCurve(to: next, control: pts[i])
+                let w = pressureWidth(pressures[i], base: stroke.width)
+                layer.stroke(seg, with: .color(stroke.color), style: strokeStyle(w))
+                current = next
             }
+
+            // Tail: last midpoint to the final point.
+            var tail = Path()
+            tail.move(to: current)
+            tail.addLine(to: pts[pts.count - 1])
+            layer.stroke(
+                tail, with: .color(stroke.color),
+                style: strokeStyle(pressureWidth(pressures[pts.count - 1], base: stroke.width))
+            )
         }
+    }
+
+    private func strokeStyle(_ width: CGFloat) -> StrokeStyle {
+        StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
     }
 
     private func linePath(_ stroke: AnnotationStroke) -> Path {

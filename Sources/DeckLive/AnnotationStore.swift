@@ -241,6 +241,10 @@ final class AnnotationStore: ObservableObject {
         }
     }
 
+    /// Whether the floating presenter toolbar is on screen. Toggled by the
+    /// ⌘T shortcut so the presenter can draw against a clean slide.
+    @Published var isToolbarVisible: Bool = true
+
     // MARK: Selection (pointer + rect/lasso selectors)
 
     /// Identifiers of strokes currently selected. The blue selection
@@ -292,12 +296,18 @@ final class AnnotationStore: ObservableObject {
 
     @Published private var strokesByPage: [Int: [AnnotationStroke]] = [:]
 
+    /// Strokes removed by Undo, kept per page so Redo (⇧⌘Z) can restore
+    /// them. Cleared for a page whenever a new stroke is committed there.
+    private var redoByPage: [Int: [AnnotationStroke]] = [:]
+
     func strokes(for page: Int) -> [AnnotationStroke] {
         strokesByPage[page] ?? []
     }
 
     func append(stroke: AnnotationStroke, page: Int) {
         strokesByPage[page, default: []].append(stroke)
+        // Committing a fresh stroke invalidates the redo history.
+        redoByPage[page] = nil
     }
 
     /// Replaces all strokes for a page with the given list. Used when
@@ -693,16 +703,83 @@ final class AnnotationStore: ObservableObject {
 
     func undo(page: Int) {
         guard var strokes = strokesByPage[page], !strokes.isEmpty else { return }
-        strokes.removeLast()
-        strokesByPage[page] = strokes
+        let removed = strokes.removeLast()
+        strokesByPage[page] = strokes.isEmpty ? nil : strokes
+        redoByPage[page, default: []].append(removed)
+    }
+
+    /// Restores the most recently undone stroke on the page, if any.
+    func redo(page: Int) {
+        guard var stack = redoByPage[page], !stack.isEmpty else { return }
+        let stroke = stack.removeLast()
+        redoByPage[page] = stack.isEmpty ? nil : stack
+        // Insert directly (not via `append`) so the redo history survives.
+        strokesByPage[page, default: []].append(stroke)
     }
 
     func clear(page: Int) {
         strokesByPage[page] = nil
+        redoByPage[page] = nil
     }
 
     func clearAll() {
         strokesByPage.removeAll()
+        redoByPage.removeAll()
+    }
+
+    // MARK: - Keyboard-shortcut helpers
+
+    /// Tool order used by the Tab "cycle tool" shortcut.
+    private static let cycleOrder: [AnnotationTool] = [
+        .pen, .highlighter, .line, .arrow, .rectangle, .ellipse, .text, .pointer
+    ]
+
+    /// Advances to the next drawing tool (wraps around). Bound to Tab.
+    func cycleTool() {
+        let order = Self.cycleOrder
+        let idx = order.firstIndex(of: tool) ?? -1
+        tool = order[(idx + 1) % order.count]
+    }
+
+    /// Toggles between two related tools, selecting `a` first if neither is
+    /// currently active. Used by the paired tool shortcuts (⌘2 line/arrow,
+    /// ⌘3 rectangle/ellipse).
+    func toggleTool(_ a: AnnotationTool, _ b: AnnotationTool) {
+        tool = (tool == a) ? b : a
+    }
+
+    func enlargeThickness() { adjustThickness(by: +1) }
+    func reduceThickness() { adjustThickness(by: -1) }
+
+    /// Nudges the active tool's size within its allowed range. Highlighter
+    /// width and text size move in larger steps to match their wider ranges.
+    private func adjustThickness(by step: CGFloat) {
+        switch tool {
+        case .highlighter:
+            highlighterWidth = min(44, max(8, highlighterWidth + step * 2))
+        case .text:
+            textFontSize = min(72, max(14, textFontSize + step * 2))
+        default:
+            penWidth = min(14, max(1, penWidth + step))
+        }
+    }
+
+    /// Cycles to the next color swatch for the active tool. Bound to ⌘E.
+    func cycleColor() {
+        switch tool {
+        case .highlighter:
+            highlighterColorIndex = (highlighterColorIndex + 1) % Self.highlighterColors.count
+        default:
+            penColorIndex = (penColorIndex + 1) % Self.penColors.count
+        }
+    }
+
+    /// Selects every stroke on the page and switches to the pointer tool so
+    /// the selection is immediately movable/resizable. Bound to ⌘A.
+    func selectAll(page: Int) {
+        let ids = strokes(for: page).map(\.id)
+        selectedStrokeIDs = Set(ids)
+        if !ids.isEmpty { tool = .pointer }
     }
 
     // MARK: - Image insertion

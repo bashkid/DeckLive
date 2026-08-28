@@ -577,15 +577,24 @@ enum StrokeRenderer {
     }
 
     private static func drawFreehand(_ stroke: AnnotationStroke, in context: inout GraphicsContext) {
-        var path = Path()
+        // Pressure-sensitive pen: variable-width smoothed curve, matching
+        // the live canvas.
+        if stroke.tool == .pen,
+           let pressures = stroke.pressures,
+           pressures.count == stroke.points.count,
+           stroke.points.count >= 2 {
+            drawPressurePen(stroke, pressures: pressures, in: &context)
+            return
+        }
+
         let isDot = stroke.points.count == 1
+        var path = Path()
         if isDot {
             let p = stroke.points[0]
             let r = stroke.width / 2
             path.addEllipse(in: CGRect(x: p.x - r, y: p.y - r, width: stroke.width, height: stroke.width))
         } else {
-            path.move(to: stroke.points[0])
-            for p in stroke.points.dropFirst() { path.addLine(to: p) }
+            path = smoothedPath(through: stroke.points)
         }
         context.drawLayer { layer in
             layer.opacity = stroke.opacity
@@ -595,6 +604,87 @@ enum StrokeRenderer {
                 let style = StrokeStyle(lineWidth: stroke.width, lineCap: .round, lineJoin: .round)
                 layer.stroke(path, with: .color(stroke.color), style: style)
             }
+        }
+    }
+
+    /// Midpoint / quadratic-Bézier smoothing — identical to the live
+    /// canvas so exported strokes render the same curves.
+    static func smoothedPath(through pts: [CGPoint]) -> Path {
+        var path = Path()
+        guard pts.count > 1 else {
+            if let p = pts.first { path.move(to: p) }
+            return path
+        }
+        if pts.count == 2 {
+            path.move(to: pts[0])
+            path.addLine(to: pts[1])
+            return path
+        }
+        path.move(to: pts[0])
+        path.addLine(to: midpoint(pts[0], pts[1]))
+        for i in 1..<pts.count - 1 {
+            path.addQuadCurve(to: midpoint(pts[i], pts[i + 1]), control: pts[i])
+        }
+        path.addLine(to: pts[pts.count - 1])
+        return path
+    }
+
+    private static func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
+        CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+    }
+
+    private static func pressureWidth(_ pressure: CGFloat, base: CGFloat) -> CGFloat {
+        let clamped = min(max(pressure, 0), 1)
+        return max(0.5, base * (0.3 + 0.7 * clamped))
+    }
+
+    private static func drawPressurePen(
+        _ stroke: AnnotationStroke,
+        pressures: [CGFloat],
+        in context: inout GraphicsContext
+    ) {
+        let pts = stroke.points
+        func style(_ w: CGFloat) -> StrokeStyle {
+            StrokeStyle(lineWidth: w, lineCap: .round, lineJoin: .round)
+        }
+
+        if pts.count == 2 {
+            let w = pressureWidth((pressures[0] + pressures[1]) / 2, base: stroke.width)
+            var seg = Path()
+            seg.move(to: pts[0])
+            seg.addLine(to: pts[1])
+            context.drawLayer { layer in
+                layer.opacity = stroke.opacity
+                layer.stroke(seg, with: .color(stroke.color), style: style(w))
+            }
+            return
+        }
+
+        context.drawLayer { layer in
+            layer.opacity = stroke.opacity
+
+            var current = midpoint(pts[0], pts[1])
+            var lead = Path()
+            lead.move(to: pts[0])
+            lead.addLine(to: current)
+            layer.stroke(lead, with: .color(stroke.color),
+                         style: style(pressureWidth(pressures[0], base: stroke.width)))
+
+            for i in 1..<pts.count - 1 {
+                let next = midpoint(pts[i], pts[i + 1])
+                var seg = Path()
+                seg.move(to: current)
+                seg.addQuadCurve(to: next, control: pts[i])
+                layer.stroke(seg, with: .color(stroke.color),
+                             style: style(pressureWidth(pressures[i], base: stroke.width)))
+                current = next
+            }
+
+            var tail = Path()
+            tail.move(to: current)
+            tail.addLine(to: pts[pts.count - 1])
+            layer.stroke(tail, with: .color(stroke.color),
+                         style: style(pressureWidth(pressures[pts.count - 1], base: stroke.width)))
         }
     }
 

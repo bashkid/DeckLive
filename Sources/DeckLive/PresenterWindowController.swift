@@ -213,6 +213,12 @@ final class PresenterWindowController: NSWindowController {
                 return nil
             }
 
+            // ScreenBrush-style drawing shortcuts (tool selection, size,
+            // color, undo/redo, clear, etc.).
+            if self.handleDrawingShortcuts(event) {
+                return nil
+            }
+
             switch event.keyCode {
             case 123, 126: // left / up arrow — previous slide
                 self.deckStore.previousPage()
@@ -249,6 +255,71 @@ final class PresenterWindowController: NSWindowController {
         default:
             return false
         }
+    }
+
+    /// Drawing / annotation shortcuts modeled on ScreenBrush's scheme.
+    /// Returns true when handled so the caller swallows the event. Only the
+    /// actions that map onto DeckLive's existing tools are wired up; the
+    /// rest of ScreenBrush's shortcuts (flashlight, layers, snapshots, …)
+    /// have no DeckLive equivalent and are intentionally left out.
+    ///
+    /// | Shortcut | Action |
+    /// | -------- | ------ |
+    /// | ⇥ | Cycle tool |
+    /// | ⌘1 | Pen |
+    /// | ⌘2 | Arrow / Line (toggle) |
+    /// | ⌘3 | Rectangle / Ellipse (toggle) |
+    /// | ⌘4 | Text |
+    /// | ⌘M | Pointer (hand) |
+    /// | ⌘X | Brush eraser (scissors) |
+    /// | ⌘D / ⌃D | Enlarge / reduce thickness |
+    /// | ⌘E | Switch color |
+    /// | ⌘Z / ⇧⌘Z | Undo / Redo |
+    /// | ⌘A | Select all |
+    /// | ⌘⌫ | Clear slide |
+    /// | ⌘W | Insert whiteboard |
+    /// | ⌘T | Show / hide toolbar |
+    private func handleDrawingShortcuts(_ event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let key = deckStore.currentAnnotationKey
+
+        // Tab with no modifiers — cycle through the drawing tools.
+        if event.keyCode == 48, mods.isEmpty {
+            annotations.cycleTool()
+            return true
+        }
+
+        // ⌃D — reduce thickness (Command variant handled below).
+        if mods == [.control], event.keyCode == 2 {
+            annotations.reduceThickness()
+            return true
+        }
+
+        // Everything else is Command-based. Ignore combos that also carry
+        // Option/Control so we don't hijack other chords.
+        guard mods.contains(.command),
+              !mods.contains(.option),
+              !mods.contains(.control) else { return false }
+        let shift = mods.contains(.shift)
+
+        switch event.keyCode {
+        case 18: annotations.tool = .pen                              // ⌘1
+        case 19: annotations.toggleTool(.arrow, .line)               // ⌘2
+        case 20: annotations.toggleTool(.rectangle, .ellipse)       // ⌘3
+        case 21: annotations.tool = .text                           // ⌘4
+        case 46: annotations.tool = .pointer                        // ⌘M
+        case 7:  annotations.tool = .brushEraser                    // ⌘X
+        case 2:  annotations.enlargeThickness()                     // ⌘D
+        case 14: annotations.cycleColor()                           // ⌘E
+        case 6:                                                     // ⌘Z / ⇧⌘Z
+            if shift { annotations.redo(page: key) } else { annotations.undo(page: key) }
+        case 0:  annotations.selectAll(page: key)                   // ⌘A
+        case 51: annotations.clear(page: key)                       // ⌘⌫
+        case 13: deckStore.insertWhiteboardAfterCurrent(canvasSize: canvasSize) // ⌘W
+        case 17: annotations.isToolbarVisible.toggle()              // ⌘T
+        default: return false
+        }
+        return true
     }
 
     private func handleKeyDuringQuiz(_ event: NSEvent) -> NSEvent? {

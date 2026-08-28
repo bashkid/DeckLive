@@ -39,21 +39,24 @@ struct PresenterView: View {
             )
             .ignoresSafeArea()
 
-            PresenterToolbar(
-                annotations: annotations,
-                quizStore: quizStore,
-                deckStore: deckStore,
-                formStore: formStore,
-                timerStore: timerStore,
-                annotationKey: deckStore.currentAnnotationKey,
-                canvasSize: canvasSize,
-                onGenerateQuiz: { generateQuiz() },
-                onExportPDF: { runExport(.pdf) },
-                onExportPPTX: { runExport(.pptx) },
-                onRemoveCurrentWhiteboard: { deckStore.removeCurrentWhiteboard() },
-                onInsertImage: { insertImageViaPanel() }
-            )
-            .padding(.bottom, 28)
+            if annotations.isToolbarVisible {
+                PresenterToolbar(
+                    annotations: annotations,
+                    quizStore: quizStore,
+                    deckStore: deckStore,
+                    formStore: formStore,
+                    timerStore: timerStore,
+                    annotationKey: deckStore.currentAnnotationKey,
+                    canvasSize: canvasSize,
+                    onGenerateQuiz: { generateQuiz() },
+                    onExportPDF: { runExport(.pdf) },
+                    onExportPPTX: { runExport(.pptx) },
+                    onRemoveCurrentWhiteboard: { deckStore.removeCurrentWhiteboard() },
+                    onInsertImage: { insertImageViaPanel() }
+                )
+                .padding(.bottom, 28)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
 
             if quizStore.isVisible {
                 QuizOverlay(store: quizStore) {
