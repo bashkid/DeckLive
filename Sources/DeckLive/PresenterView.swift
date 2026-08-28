@@ -102,6 +102,9 @@ struct PresenterView: View {
             // Persist whiteboard strokes for the slide we're leaving
             // before we re-render for the new one.
             persistCurrentWhiteboardStrokes()
+            // Start each slide fresh at 100 % / centered so we never
+            // advance while still zoomed into a corner of the last slide.
+            viewport.reset()
             renderCurrentSlide()
         }
         .onChange(of: annotations.strokes(for: deckStore.currentAnnotationKey)) { _ in
@@ -127,8 +130,15 @@ struct PresenterView: View {
                     Image(nsImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
+                        // Zoom + pan from the shared viewport, anchored at
+                        // the top-left so the transform matches the
+                        // annotation canvas (which scales around its origin)
+                        // and drawn annotations stay glued to the slide.
+                        .scaleEffect(viewport.zoom, anchor: .topLeading)
+                        .offset(viewport.pan)
                 }
             }
+            .clipped()
         case .whiteboard:
             whiteboardBackdrop
         case .none:

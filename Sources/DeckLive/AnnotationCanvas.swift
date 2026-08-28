@@ -62,19 +62,17 @@ struct AnnotationCanvas: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            if isWhiteboard {
-                whiteboardZoomBadge
-                    .padding(.top, 18)
-                    .padding(.leading, 18)
-                    .zIndex(2)
-            }
+            whiteboardZoomBadge
+                .padding(.top, 18)
+                .padding(.leading, 18)
+                .zIndex(2)
             Canvas { context, _ in
-                // Whiteboard zoom + pan: apply to the whole canvas so
-                // stored world-coord strokes get scaled/translated.
-                if isWhiteboard {
-                    context.translateBy(x: whiteboardPan.width, y: whiteboardPan.height)
-                    context.scaleBy(x: whiteboardZoom, y: whiteboardZoom)
-                }
+                // Zoom + pan applies to every slide (PDF pages and
+                // whiteboards alike) so stored world-coord strokes get
+                // scaled/translated in step with the slide backdrop. At
+                // 100 % / no pan this is the identity transform.
+                context.translateBy(x: whiteboardPan.width, y: whiteboardPan.height)
+                context.scaleBy(x: whiteboardZoom, y: whiteboardZoom)
                 for stroke in store.strokes(for: pageIndex) {
                     draw(stroke, in: &context)
                 }
@@ -98,7 +96,6 @@ struct AnnotationCanvas: View {
     private var combinedGesture: some Gesture {
         let zoom = MagnificationGesture()
             .onChanged { scale in
-                guard isWhiteboard else { return }
                 viewport.applyPinch(scale: scale)
             }
             .onEnded { _ in
@@ -108,10 +105,10 @@ struct AnnotationCanvas: View {
     }
 
     /// Converts a gesture point (window-space) into world-space (the
-    /// coordinate system stored strokes live in). On non-whiteboard
-    /// slides this is the identity.
+    /// coordinate system stored strokes live in). At 100 % zoom with no
+    /// pan this is the identity.
     private func toWorld(_ p: CGPoint) -> CGPoint {
-        guard isWhiteboard, whiteboardZoom > 0 else { return p }
+        guard whiteboardZoom > 0 else { return p }
         return CGPoint(
             x: (p.x - whiteboardPan.width) / whiteboardZoom,
             y: (p.y - whiteboardPan.height) / whiteboardZoom
@@ -291,10 +288,12 @@ struct AnnotationCanvas: View {
                     points: [point],
                     color: store.penColor,
                     width: store.penWidth,
-                    tool: .pen
+                    tool: .pen,
+                    pressures: [store.currentPressure]
                 )
             } else {
                 inProgressStroke?.points.append(point)
+                inProgressStroke?.pressures?.append(store.currentPressure)
             }
 
         case .highlighter:
@@ -457,6 +456,19 @@ struct AnnotationCanvas: View {
     }
 
     private func drawFreehand(_ stroke: AnnotationStroke, in context: inout GraphicsContext) {
+        // Pressure-sensitive pen: draw each segment at a width scaled by
+        // the stylus pressure sampled at its endpoints, so a firmer press
+        // yields a thicker line. Only pen strokes with a matching pressure
+        // array take this path; highlighter and mouse-drawn pens fall
+        // through to the constant-width renderer below.
+        if stroke.tool == .pen,
+           let pressures = stroke.pressures,
+           pressures.count == stroke.points.count,
+           stroke.points.count >= 2 {
+            drawPressurePen(stroke, pressures: pressures, in: &context)
+            return
+        }
+
         var path = Path()
         let isDot = stroke.points.count == 1
         if isDot {
@@ -474,6 +486,41 @@ struct AnnotationCanvas: View {
             } else {
                 let style = StrokeStyle(lineWidth: stroke.width, lineCap: .round, lineJoin: .round)
                 layer.stroke(path, with: .color(stroke.color), style: style)
+            }
+        }
+    }
+
+    /// Maps a raw 0…1 pressure onto a stroke width. A light touch still
+    /// leaves a visible line (30 % of the base width) while a firm press
+    /// reaches the full configured width.
+    private func pressureWidth(_ pressure: CGFloat, base: CGFloat) -> CGFloat {
+        let clamped = min(max(pressure, 0), 1)
+        return max(0.5, base * (0.3 + 0.7 * clamped))
+    }
+
+    /// Strokes a freehand pen path segment-by-segment, varying the line
+    /// width with the per-point pressure. Round caps/joins keep the
+    /// varying-width segments visually continuous.
+    private func drawPressurePen(
+        _ stroke: AnnotationStroke,
+        pressures: [CGFloat],
+        in context: inout GraphicsContext
+    ) {
+        context.drawLayer { layer in
+            layer.opacity = stroke.opacity
+            for i in 1..<stroke.points.count {
+                let a = stroke.points[i - 1]
+                let b = stroke.points[i]
+                let avg = (pressures[i - 1] + pressures[i]) / 2
+                let w = pressureWidth(avg, base: stroke.width)
+                var seg = Path()
+                seg.move(to: a)
+                seg.addLine(to: b)
+                layer.stroke(
+                    seg,
+                    with: .color(stroke.color),
+                    style: StrokeStyle(lineWidth: w, lineCap: .round, lineJoin: .round)
+                )
             }
         }
     }

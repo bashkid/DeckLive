@@ -119,6 +119,11 @@ struct AnnotationStroke: Identifiable, Equatable, Codable {
     var color: Color
     var width: CGFloat
     var tool: AnnotationTool
+    /// Per-point stylus pressure (0…1) captured from a pressure-sensitive
+    /// tablet (e.g. Wacom) for `.pen` strokes. Parallel to `points` when
+    /// present; nil for mouse/trackpad input, in which case the stroke is
+    /// drawn at a constant `width`.
+    var pressures: [CGFloat]? = nil
     /// Whether enclosed shape tools render filled or outlined.
     var isFilled: Bool = false
     /// Text content for `.text` annotations.
@@ -130,7 +135,7 @@ struct AnnotationStroke: Identifiable, Equatable, Codable {
     var imageData: Data? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, points, r, g, b, a, width, tool, isFilled, text, fontSize, imageData
+        case id, points, r, g, b, a, width, tool, isFilled, text, fontSize, imageData, pressures
     }
 
     init(
@@ -139,6 +144,7 @@ struct AnnotationStroke: Identifiable, Equatable, Codable {
         color: Color,
         width: CGFloat,
         tool: AnnotationTool,
+        pressures: [CGFloat]? = nil,
         isFilled: Bool = false,
         text: String? = nil,
         fontSize: CGFloat = 28,
@@ -149,6 +155,7 @@ struct AnnotationStroke: Identifiable, Equatable, Codable {
         self.color = color
         self.width = width
         self.tool = tool
+        self.pressures = pressures
         self.isFilled = isFilled
         self.text = text
         self.fontSize = fontSize
@@ -166,6 +173,7 @@ struct AnnotationStroke: Identifiable, Equatable, Codable {
         color = Color(.sRGB, red: r, green: g, blue: b, opacity: a)
         width = try c.decode(CGFloat.self, forKey: .width)
         tool = try c.decode(AnnotationTool.self, forKey: .tool)
+        pressures = try c.decodeIfPresent([CGFloat].self, forKey: .pressures)
         isFilled = try c.decodeIfPresent(Bool.self, forKey: .isFilled) ?? false
         text = try c.decodeIfPresent(String.self, forKey: .text)
         fontSize = try c.decodeIfPresent(CGFloat.self, forKey: .fontSize) ?? 28
@@ -183,6 +191,7 @@ struct AnnotationStroke: Identifiable, Equatable, Codable {
         try c.encode(Double(ns.alphaComponent), forKey: .a)
         try c.encode(width, forKey: .width)
         try c.encode(tool, forKey: .tool)
+        try c.encodeIfPresent(pressures, forKey: .pressures)
         try c.encode(isFilled, forKey: .isFilled)
         try c.encodeIfPresent(text, forKey: .text)
         try c.encode(fontSize, forKey: .fontSize)
@@ -248,6 +257,12 @@ final class AnnotationStore: ObservableObject {
     static let penColors: [Color] = [.red, .yellow, .green, .blue, .black, .white]
     @Published var penColorIndex: Int = 0
     @Published var penWidth: CGFloat = 4
+
+    /// Latest stylus pressure (0…1) reported by a pressure-sensitive
+    /// tablet, refreshed by the presenter window's event monitor as the
+    /// pen moves. Defaults to 1.0 so mouse/trackpad drawing keeps a
+    /// constant width. Read by `AnnotationCanvas` when sampling pen points.
+    var currentPressure: CGFloat = 1.0
 
     var penColor: Color { Self.penColors[penColorIndex] }
 

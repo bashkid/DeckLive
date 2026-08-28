@@ -11,6 +11,7 @@ final class PresenterWindowController: NSWindowController {
 
     private var keyMonitor: Any?
     private var scrollMonitor: Any?
+    private var pressureMonitor: Any?
     private let deckStore: DeckStore
     private let quizStore = QuizStore()
     private let formStore = GoogleFormStore()
@@ -70,39 +71,74 @@ final class PresenterWindowController: NSWindowController {
         NSApp.activate(ignoringOtherApps: true)
         installKeyMonitor()
         installScrollMonitor()
+        installPressureMonitor()
     }
 
     override func close() {
         removeKeyMonitor()
         removeScrollMonitor()
+        removePressureMonitor()
         super.close()
+    }
+
+    // MARK: - Stylus pressure (Wacom / pressure-sensitive tablets)
+
+    /// Tracks the latest stylus pressure from tablet mouse events and
+    /// feeds it into the annotation store, so the pen tool can vary its
+    /// width with how hard the user presses. Runs ahead of the SwiftUI
+    /// drag gesture (local monitors fire during `sendEvent:`), so the
+    /// value is already fresh when the canvas samples each point.
+    /// Non-tablet input (regular mouse / trackpad) reports pressure 1.0
+    /// so those strokes stay a constant width.
+    private func installPressureMonitor() {
+        pressureMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .leftMouseDragged]
+        ) { [weak self] event in
+            guard let self else { return event }
+            if event.subtype == .tabletPoint {
+                self.annotations.currentPressure = CGFloat(event.pressure)
+            } else {
+                self.annotations.currentPressure = 1.0
+            }
+            return event
+        }
+    }
+
+    private func removePressureMonitor() {
+        if let pressureMonitor {
+            NSEvent.removeMonitor(pressureMonitor)
+        }
+        pressureMonitor = nil
     }
 
     // MARK: - Scroll wheel (infinite whiteboard pan + cmd-scroll zoom)
 
     /// Catches scroll-wheel + trackpad-scroll events while the presenter
-    /// window is up. On whiteboard slides:
-    ///   - scroll without modifiers → pan (two-finger swipe / mouse wheel)
-    ///   - ⌘ + scroll              → zoom (one full notch ≈ 5 %)
-    /// On PDF slides the events fall through untouched so any built-in
-    /// scroll behavior keeps working.
+    /// window is up, for both PDF and whiteboard slides:
+    ///   - ⌘ + scroll → zoom (one full notch ≈ 5 %)
+    ///   - plain scroll → pan. Always on whiteboards (infinite canvas); on
+    ///     PDF slides only once zoomed in, so a stray two-finger swipe at
+    ///     100 % doesn't nudge the slide off-center.
     private func installScrollMonitor() {
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel]) { [weak self] event in
             guard let self else { return event }
-            guard self.deckStore.isCurrentSlideWhiteboard else { return event }
 
             if event.modifierFlags.contains(.command) {
                 // Cmd + scroll = zoom.
                 let step = CGFloat(event.scrollingDeltaY) * 0.01
                 self.viewport.setZoom(self.viewport.zoom + step)
-            } else {
-                // Plain scroll = pan. Trackpad swipes already arrive in
-                // screen points (deltas are inverted, so we negate).
-                self.viewport.pan(by: CGSize(
-                    width:  CGFloat(event.scrollingDeltaX),
-                    height: CGFloat(event.scrollingDeltaY)
-                ))
+                return nil
             }
+
+            // Plain scroll = pan. Trackpad swipes already arrive in screen
+            // points. Only intercept when panning actually makes sense.
+            let canPan = self.deckStore.isCurrentSlideWhiteboard || self.viewport.zoom != 1.0
+            guard canPan else { return event }
+
+            self.viewport.pan(by: CGSize(
+                width:  CGFloat(event.scrollingDeltaX),
+                height: CGFloat(event.scrollingDeltaY)
+            ))
             return nil
         }
     }

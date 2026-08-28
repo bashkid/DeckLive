@@ -86,13 +86,16 @@ echo "==> Generating AppIcon.icns from $LOGO_PNG …"
 ICON_DIR="$(mktemp -d)/AppIcon.iconset"
 mkdir -p "$ICON_DIR"
 
-# Pad the logo onto a 1024×1024 transparent canvas using a small
-# AppKit-based helper (sips can't preserve alpha when padding). The
-# original artwork already carries its own rounded shape, so this gives
-# the dock + Launchpad the bare silhouette to render — no surrounding
-# white box, which is what made the icon look off before.
+# Step 1: alpha-key the white background out of the source PNG via
+# flood-fill from the corners, so the Dock renders the artwork's own
+# silhouette instead of a solid white square.
+TRANSPARENT_PNG="$(mktemp).png"
+swift "$SCRIPT_DIR/transparent-bg.swift" "$LOGO_PNG" "$TRANSPARENT_PNG"
+
+# Step 2: pad the silhouette onto a 1024×1024 transparent canvas using a
+# small AppKit-based helper (sips can't preserve alpha when padding).
 PADDED_PNG="$(mktemp).png"
-swift "$SCRIPT_DIR/make-square-icon.swift" "$LOGO_PNG" "$PADDED_PNG" 1024
+swift "$SCRIPT_DIR/make-square-icon.swift" "$TRANSPARENT_PNG" "$PADDED_PNG" 1024
 
 # Standard macOS icon sizes (1× and 2× for each).
 for size in 16 32 128 256 512; do

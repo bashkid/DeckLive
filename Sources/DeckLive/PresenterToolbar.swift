@@ -261,18 +261,48 @@ struct PresenterToolbar: View {
     private var widthSlider: some View {
         switch annotations.tool {
         case .pen, .line, .arrow, .rectangle, .ellipse:
-            Slider(value: $annotations.penWidth, in: 1...14)
-                .frame(width: 90)
+            sizeControl(value: $annotations.penWidth, range: 1...14)
         case .highlighter:
-            Slider(value: $annotations.highlighterWidth, in: 8...44)
-                .frame(width: 90)
+            sizeControl(value: $annotations.highlighterWidth, range: 8...44)
         case .text:
-            Slider(value: $annotations.textFontSize, in: 14...72)
-                .frame(width: 90)
+            sizeControl(value: $annotations.textFontSize, range: 14...72)
         default:
             EmptyView()
         }
     }
+
+    /// A slider paired with a numeric entry field so the user can either
+    /// drag or type an exact size. Typed values are clamped to the slider's
+    /// range so the two controls never disagree.
+    private func sizeControl(value: Binding<CGFloat>, range: ClosedRange<CGFloat>) -> some View {
+        HStack(spacing: 8) {
+            Slider(value: value, in: range)
+                .frame(width: 90)
+            TextField("", value: clampedDouble(value, range), formatter: Self.sizeFormatter)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 42)
+                .multilineTextAlignment(.center)
+                .monospacedDigit()
+                .help("Type an exact size (\(Int(range.lowerBound))–\(Int(range.upperBound)))")
+        }
+    }
+
+    /// Bridges the `CGFloat` size binding to the `Double` a `TextField`
+    /// formatter expects, clamping typed input into the allowed range.
+    private func clampedDouble(_ value: Binding<CGFloat>, _ range: ClosedRange<CGFloat>) -> Binding<Double> {
+        Binding(
+            get: { Double(value.wrappedValue) },
+            set: { value.wrappedValue = min(max(CGFloat($0), range.lowerBound), range.upperBound) }
+        )
+    }
+
+    private static let sizeFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.maximumFractionDigits = 0
+        f.minimum = 1
+        return f
+    }()
 
     /// Toggle that switches the active shape between outlined and filled.
     /// Captured into each new stroke at creation time so existing strokes
